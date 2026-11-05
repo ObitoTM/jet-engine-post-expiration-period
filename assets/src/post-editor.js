@@ -47,9 +47,11 @@ function PostExpirationPanel() {
 			/>
 			{ expiration.enabled && <wp.element.Fragment>
 				<TextControl
+					className={ missingDate ? 'jet-pep-date-error' : undefined }
 					label={ __( 'Expires on', domain ) }
 					type="date"
 					value={ expiration.date }
+					aria-invalid={ missingDate }
 					help={ missingDate ? __( 'Select an expiration date.', domain ) : undefined }
 					onChange={ date => update( { date } ) }
 					__next40pxDefaultSize
