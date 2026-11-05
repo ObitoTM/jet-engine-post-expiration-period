@@ -1,0 +1,84 @@
+.jet-pep-action-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	margin-top: 24px;
+	border-top: 1px solid #ddd;
+	padding-top: 24px;
+}
+
+.jet-form-edit-modal .jet-pep-action-settings .components-base-control {
+	margin-bottom: 0;
+}
+
+.jet-form-edit-modal .jet-pep-action-settings .components-base-control .components-base-control__field {
+	display: block;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.jet-pep-action-settings .components-input-base,
+.jet-pep-action-settings .components-input-control__container {
+	width: 100%;
+	min-width: 0;
+}
+
+.jet-form-edit-modal .jet-pep-action-settings .components-base-control__label,
+.jet-form-edit-modal .jet-pep-action-settings .components-input-control__label {
+	display: block;
+	width: auto;
+	max-width: none;
+	margin: 0 0 8px;
+	padding: 0;
+}
+
+.jet-form-edit-modal .jet-pep-action-settings .components-input-control__label {
+	margin-bottom: 0;
+}
+
+.jet-pep-action-settings__help {
+	margin: 0;
+}
+
+#jet-engine-post-expiration .inside input[type="date"],
+#jet-engine-post-expiration .inside select,
+.jet-pep-document-panel input[type="date"] {
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+}
+
+#jet-engine-post-expiration .inside input[type="date"] {
+	font-size: 12px;
+}
+
+/* Gutenberg places the plugin-panel slot before its built-in taxonomy panels. */
+[role="tabpanel"]:has(> .jet-pep-document-panel) {
+	display: flex;
+	flex-direction: column;
+	reading-flow: flex-visual;
+}
+
+[role="tabpanel"]:has(> .jet-pep-document-panel) > * {
+	flex-shrink: 0;
+}
+
+.jet-pep-document-panel {
+	order: 1;
+}
+
+.jet-pep-document-panel__controls {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.jet-pep-document-panel__controls .components-base-control__field {
+	margin-bottom: 0;
+}
+
+.jet-pep-document-panel__controls .components-base-control__help {
+	margin: 8px 0 0;
+}
