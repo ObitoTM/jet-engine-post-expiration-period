@@ -83,6 +83,10 @@
 	margin: 8px 0 0;
 }
 
+.jet-pep-document-panel .jet-pep-document-panel__notice {
+	margin: 0;
+}
+
 .jet-pep-document-panel .jet-pep-control-error input[type="date"] {
 	border-color: #cc1818;
 	box-shadow: 0 0 0 1px #cc1818;

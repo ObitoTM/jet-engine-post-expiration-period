@@ -19,6 +19,27 @@ if ( ! defined( 'WPINC' ) ) {
 }
 
 add_action( 'plugins_loaded', 'jet_engine_post_ep_init' );
+register_deactivation_hook( __FILE__, 'jet_engine_post_ep_deactivate' );
+
+function jet_engine_post_ep_deactivate( $network_wide = false ) {
+    if ( ! is_multisite() || ! $network_wide ) {
+        wp_clear_scheduled_hook( 'jet-engine-pep/daily_check_expirations' );
+        return;
+    }
+    $offset = 0;
+    do {
+        $sites = get_sites( array( 'fields' => 'ids', 'number' => 100, 'offset' => $offset ) );
+        foreach ( $sites as $site_id ) {
+            switch_to_blog( $site_id );
+            try {
+                wp_clear_scheduled_hook( 'jet-engine-pep/daily_check_expirations' );
+            } finally {
+                restore_current_blog();
+            }
+        }
+        $offset += count( $sites );
+    } while ( count( $sites ) === 100 );
+}
 
 function jet_engine_post_ep_init() {
 

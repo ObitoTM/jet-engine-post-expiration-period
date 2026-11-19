@@ -22,7 +22,7 @@ function ExpirationFieldControl( { value, onChange } ) {
 }
 
 addFilter( 'jet.fb.render.action.insert_post', domain, () => props => {
-	const { settings, onChangeSetting } = props;
+	const { settings, onChangeSetting, onChangeSettingObj } = props;
 	const source = settings.expiration_source || 'fixed';
 	const valueType = source === 'fixed' ? 'days' : ( settings.expiration_value_type || 'days' );
 	const applyOn = settings.expiration_apply_on || 'create';
@@ -31,7 +31,10 @@ addFilter( 'jet.fb.render.action.insert_post', domain, () => props => {
 		<ToggleControl
 			label={ __( 'Enable expiration', domain ) }
 			checked={ !! settings.enable_expiration_period }
-			onChange={ value => onChangeSetting( value, 'enable_expiration_period' ) }
+			onChange={ value => onChangeSettingObj( {
+				enable_expiration_period: value,
+				...( value && ![ 'draft', 'trash' ].includes( settings.expiration_action ) ? { expiration_action: 'draft' } : {} ),
+			} ) }
 			__nextHasNoMarginBottom
 		/>
 		{ settings.enable_expiration_period && <Fragment>
@@ -97,7 +100,7 @@ addFilter( 'jet.fb.render.action.insert_post', domain, () => props => {
 			<RadioControl
 				label={ __( 'On expiration', domain ) }
 				className="jet-inline-radio"
-				selected={ settings.expiration_action || 'draft' }
+				selected={ settings.expiration_action || '' }
 				options={ [
 					{ label: __( 'Set to draft', domain ), value: 'draft' },
 					{ label: __( 'Move to trash', domain ), value: 'trash' },

@@ -8,8 +8,6 @@ if ( ! defined( 'WPINC' ) ) {
 	die();
 }
 
-class Jet_Engine_Post_PE_Lock_Exception extends RuntimeException {}
-
 class Jet_Engine_Post_PE {
 	/**
 	 * Instance.
@@ -233,7 +231,15 @@ class Jet_Engine_Post_PE {
 
 	public function expiration_post_types() {
 		$form_type = function_exists( 'jet_form_builder' ) ? jet_form_builder()->post_type->slug() : 'jet-form-builder';
-		return array_values( array_diff( get_post_types(), array( $form_type ) ) );
+		$excluded = array( $form_type, 'attachment', 'revision', 'nav_menu_item', 'custom_css', 'wp_block', 'wp_template', 'wp_template_part', 'wp_global_styles', 'wp_navigation' );
+		$types = array_values( array_filter( array_diff( get_post_types( array( 'show_ui' => true ) ), $excluded ), function ( $type ) {
+			return 0 !== strpos( $type, 'wp_font_' );
+		} ) );
+		return array_values( array_intersect( (array) apply_filters( 'jet-engine-pep/post-types', $types ), get_post_types() ) );
+	}
+
+	private function trash_enabled() {
+		return ! defined( 'EMPTY_TRASH_DAYS' ) || (bool) EMPTY_TRASH_DAYS;
 	}
 
 	public function post_editor_assets() {
@@ -250,8 +256,8 @@ class Jet_Engine_Post_PE {
 		);
 		$post_id = get_the_ID();
 		$type = get_post_type_object( $screen->post_type );
-		$can_trash = $post_id ? current_user_can( 'delete_post', $post_id ) : current_user_can( $type->cap->delete_posts );
-		wp_add_inline_script( 'jet-engine-pep-post-editor', 'window.jetPEP = ' . wp_json_encode( array( 'canTrash' => $can_trash ) ) . ';', 'before' );
+		$can_trash = $this->trash_enabled() && ( $post_id ? current_user_can( 'delete_post', $post_id ) : current_user_can( $type->cap->delete_posts ) );
+		wp_add_inline_script( 'jet-engine-pep-post-editor', 'window.jetPEP = ' . wp_json_encode( array( 'canTrash' => $can_trash, 'trashEnabled' => $this->trash_enabled() ) ) . ';', 'before' );
 	}
 
 	/** Expose one atomic expiration setting in edit context, independent of custom-fields support. */
@@ -271,6 +277,7 @@ class Jet_Engine_Post_PE {
 					'enabled' => array( 'type' => 'boolean' ),
 					'date' => array( 'type' => 'string' ),
 					'action' => array( 'type' => 'string', 'enum' => array( 'draft', 'trash' ) ),
+					'legacy_expired' => array( 'type' => 'boolean', 'readonly' => true ),
 				),
 			),
 		) );
@@ -284,9 +291,10 @@ class Jet_Engine_Post_PE {
 		$timestamp = (int) get_post_meta( $post_id, $this->period_meta_key, true );
 		$action = get_post_meta( $post_id, $this->action_meta_key, true );
 		return array(
-			'enabled' => (bool) $timestamp,
+			'enabled' => (bool) $timestamp && in_array( $action, array( 'draft', 'trash' ), true ),
 			'date' => $this->expiration_display_date( $post_id, $timestamp ),
 			'action' => in_array( $action, array( 'draft', 'trash' ), true ) ? $action : 'draft',
+			'legacy_expired' => $this->is_legacy_expired( $post_id, $timestamp ),
 		);
 	}
 
@@ -310,6 +318,9 @@ class Jet_Engine_Post_PE {
 		$current = $current ?? ( $post_id ? $this->get_expiration_rest_field( array( 'id' => $post_id ) ) : null );
 		if ( $current && $value['enabled'] === $current['enabled'] && $value['date'] === $current['date'] && $value['action'] === $current['action'] ) {
 			return true;
+		}
+		if ( 'trash' === $value['action'] && ! $this->trash_enabled() ) {
+			return new WP_Error( 'jet_pep_trash_disabled', __( 'The trash is disabled. Choose Draft or disable expiration.', 'jet-engine-post-expiration-period' ), array( 'status' => 400 ) );
 		}
 		$can_trash = $post_id ? current_user_can( 'delete_post', $post_id ) : ( $post_type && current_user_can( $post_type->cap->delete_posts ) );
 		if ( 'trash' === $value['action'] && ! $can_trash ) {
@@ -336,7 +347,7 @@ class Jet_Engine_Post_PE {
 		}
 		if ( ! $value['enabled'] ) {
 			if ( ! $this->delete_meta_expiration( $post_id ) ) {
-				return new WP_Error( 'jet_pep_save_failed', __( 'Expiration could not be cancelled.', 'jet-engine-post-expiration-period' ), array( 'status' => 500 ) );
+				return new WP_Error( 'jet_pep_save_failed', __( 'The post was saved, but its expiration could not be cancelled.', 'jet-engine-post-expiration-period' ), array( 'status' => 500 ) );
 			}
 			return true;
 		}
@@ -348,7 +359,7 @@ class Jet_Engine_Post_PE {
 			? $this->update_expiration_action( $post_id, $value['date'], $value['action'] )
 			: $this->init_expiration( $this->parse_expiration_date( $value['date'] ), $post_id, $value['action'] );
 		if ( ! $saved ) {
-			return new WP_Error( 'jet_pep_save_failed', __( 'Expiration was not changed. Could not save expiration settings.', 'jet-engine-post-expiration-period' ), array( 'status' => 500 ) );
+			return new WP_Error( 'jet_pep_save_failed', __( 'The post was saved, but its expiration could not be saved.', 'jet-engine-post-expiration-period' ), array( 'status' => 500 ) );
 		}
 		return true;
 	}
@@ -365,7 +376,7 @@ class Jet_Engine_Post_PE {
 		if ( ! $period ) {
 			return;
 		}
-		$this->init_expiration( $period, $form->data['inserted_post_id'] ?? 0, $notification['expiration_action'] ?? 'draft' );
+		$this->init_expiration( $period, $form->data['inserted_post_id'] ?? 0, $notification['expiration_action'] ?? '' );
 	}
 
 	/** Read the source when a form creates a post or explicitly applies expiration on update. */
@@ -394,12 +405,12 @@ class Jet_Engine_Post_PE {
 		if ( ! $timestamp ) {
 			return false; // Invalid/empty values must not clear an existing schedule.
 		}
-		$action = $settings['expiration_action'] ?? 'draft';
+		$action = $settings['expiration_action'] ?? '';
 		if ( ! in_array( $action, array( 'draft', 'trash' ), true ) ) {
 			return false;
 		}
 		if ( ! $this->init_expiration( $timestamp, $post_id, $action ) ) {
-			throw new \Jet_Form_Builder\Exceptions\Action_Exception( 'failed', __( 'Could not save post expiration.', 'jet-engine-post-expiration-period' ) );
+			throw ( new \Jet_Form_Builder\Exceptions\Action_Exception( __( 'The post was saved, but its expiration could not be saved.', 'jet-engine-post-expiration-period' ) ) )->dynamic_error();
 		}
 		return true;
 	}
@@ -478,16 +489,14 @@ class Jet_Engine_Post_PE {
 	}
 
 	private function refresh_expiration_lock( $lock ) {
-
-		// Keep the owner UUID stable for SQL already in flight; renew with a distinct revision.
-		$owner = strrchr( $lock->value, ':' );
-		$value = ( time() + 300 ) . ':' . wp_generate_uuid4() . $owner;
+		$value = ( time() + 300 ) . ':' . wp_generate_uuid4();
 		$updated = $lock->connection->update( $lock->options, array( 'option_value' => $value ),
 			array( 'option_name' => $lock->name, 'option_value' => $lock->value ) );
 		if ( 1 !== $updated ) {
-			throw new Jet_Engine_Post_PE_Lock_Exception();
+			return false;
 		}
 		$lock->value = $value;
+		return true;
 	}
 
 	private function with_expiration_lock( $post_id, $callback, $timeout = 2 ) {
@@ -495,8 +504,6 @@ class Jet_Engine_Post_PE {
 
 		$connection = $wpdb;
 		$options = $wpdb->options;
-		$postmeta = $wpdb->postmeta;
-		$posts = $wpdb->posts;
 		$scope = $options . ':' . $post_id;
 		if ( isset( $this->expiration_locks[ $scope ] ) ) {
 			return false;
@@ -508,62 +515,11 @@ class Jet_Engine_Post_PE {
 		}
 		$lock->value = $value;
 		$this->expiration_locks[ $scope ] = true;
-		$owner = strrchr( $value, ':' );
-		$post_write_started = false;
-		$refreshing = false;
-		$refresh = function () use ( $lock, &$refreshing ) {
-			if ( $refreshing ) {
-				return;
-			}
-			$refreshing = true;
-			try {
-				$this->refresh_expiration_lock( $lock );
-			} finally {
-				$refreshing = false;
-			}
-		};
-		// Fence the actual writes as well as the PHP callback if an abandoned lease is taken over.
-		$guard = function ( $sql ) use ( $post_id, $connection, $options, $postmeta, $posts, $owner, $refresh, &$post_write_started ) {
-			global $wpdb;
-			if ( $wpdb !== $connection || $wpdb->postmeta !== $postmeta ) {
-				return $sql;
-			}
-			$metadata_write = preg_match( '/^(?:INSERT INTO|UPDATE|DELETE FROM) ' . preg_quote( $postmeta, '/' ) . '\b/', str_replace( '`', '', $sql ) );
-			$post_write = preg_match( '/^UPDATE ' . preg_quote( $posts, '/' ) . '\b.*WHERE ID = ' . $post_id . '\b/s', str_replace( '`', '', $sql ) );
-			// Guard writes without changing connection state before reads such as FOUND_ROWS().
-			if ( $metadata_write || $post_write || ( $post_write_started && preg_match( '/^\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b/i', $sql ) ) ) {
-				$refresh();
-			}
-			if ( ! $metadata_write && ! $post_write ) {
-				return $sql;
-			}
-			$fence = $connection->prepare( "EXISTS (SELECT 1 FROM $options WHERE option_name = %s AND SUBSTR(option_value, -%d) = %s)",
-				'jet_pep_lock_' . $post_id, strlen( $owner ), $owner );
-			$sql = rtrim( $sql, "; \t\r\n" );
-			if ( 0 === strpos( $sql, 'INSERT INTO' ) ) {
-				return preg_replace( '/ VALUES \((.*)\)$/s', ' SELECT $1 WHERE ' . $fence, $sql );
-			}
-			$post_write_started = $post_write || $post_write_started;
-			return $sql . ' AND ' . $fence;
-		};
-		$transition_guard = function ( $new_status, $old_status, $post ) use ( $post_id, $connection, $postmeta, $refresh ) {
-			global $wpdb;
-			if ( $wpdb === $connection && $wpdb->postmeta === $postmeta && $post->ID === (int) $post_id ) {
-				$refresh();
-			}
-		};
-		add_filter( 'query', $guard, PHP_INT_MAX );
-		add_action( 'transition_post_status', $transition_guard, PHP_INT_MIN, 3 );
 		try {
 			wp_cache_delete( $post_id, 'post_meta' );
-			$result = $callback();
-			$refresh();
-			return $result;
-		} catch ( Jet_Engine_Post_PE_Lock_Exception $exception ) {
-			return false;
+			$result = $callback( $lock );
+			return $this->refresh_expiration_lock( $lock ) ? $result : false;
 		} finally {
-			remove_filter( 'query', $guard, PHP_INT_MAX );
-			remove_action( 'transition_post_status', $transition_guard, PHP_INT_MIN );
 			$connection->delete( $options, array( 'option_name' => $lock->name, 'option_value' => $lock->value ) );
 			unset( $this->expiration_locks[ $scope ] );
 			wp_cache_delete( $post_id, 'post_meta' );
@@ -571,40 +527,44 @@ class Jet_Engine_Post_PE {
 	}
 
 	public function set_meta_expiration( $post_id, $expiration_period, $expiration_action ) {
-		return $this->with_expiration_lock( $post_id, function () use ( $post_id, $expiration_period, $expiration_action ) {
+		return $this->with_expiration_lock( $post_id, function ( $lock ) use ( $post_id, $expiration_period, $expiration_action ) {
 			$previous_period = get_post_meta( $post_id, $this->period_meta_key, true );
 			$previous_action = get_post_meta( $post_id, $this->action_meta_key, true );
-			update_post_meta( $post_id, $this->period_meta_key, $expiration_period );
-			if ( (int) get_post_meta( $post_id, $this->period_meta_key, true ) !== (int) $expiration_period ) {
+			if ( ! $this->write_expiration_meta( $lock, $post_id, $this->period_meta_key, $expiration_period ) ) {
 				return false;
 			}
-			if ( $this->save_expiration_action( $post_id, $expiration_action ) ) {
+			if ( $this->write_expiration_meta( $lock, $post_id, $this->action_meta_key, $expiration_action ) ) {
 				// Bind the calendar marker to this timestamp so stale markers do not classify another date.
-				update_post_meta( $post_id, $this->calendar_meta_key, $expiration_period );
-				if ( $this->is_calendar_expiration( $post_id, $expiration_period ) ) {
+				if ( $this->write_expiration_meta( $lock, $post_id, $this->calendar_meta_key, $expiration_period ) ) {
 					return true;
 				}
-				$this->restore_expiration_meta( $post_id, $this->action_meta_key, $previous_action, $expiration_action );
+				$this->restore_expiration_meta( $post_id, $this->action_meta_key, $previous_action, $expiration_action, $lock );
 			}
-			$this->restore_expiration_meta( $post_id, $this->period_meta_key, $previous_period, $expiration_period );
+			$this->restore_expiration_meta( $post_id, $this->period_meta_key, $previous_period, $expiration_period, $lock );
 			return false;
 		} );
 	}
 
 	private function update_expiration_action( $post_id, $date, $action ) {
-		return $this->with_expiration_lock( $post_id, function () use ( $post_id, $date, $action ) {
+		return $this->with_expiration_lock( $post_id, function ( $lock ) use ( $post_id, $date, $action ) {
 			$timestamp = (int) get_post_meta( $post_id, $this->period_meta_key, true );
 			return $timestamp && $date === $this->expiration_display_date( $post_id, $timestamp )
-				&& $this->save_expiration_action( $post_id, $action );
+				&& $this->write_expiration_meta( $lock, $post_id, $this->action_meta_key, $action );
 		} );
 	}
 
-	private function save_expiration_action( $post_id, $action ) {
-		update_post_meta( $post_id, $this->action_meta_key, $action );
-		return get_post_meta( $post_id, $this->action_meta_key, true ) === $action;
+	private function write_expiration_meta( $lock, $post_id, $key, $value ) {
+		if ( ! $this->refresh_expiration_lock( $lock ) ) {
+			return false;
+		}
+		update_post_meta( $post_id, $key, $value );
+		return $this->refresh_expiration_lock( $lock ) && (string) get_post_meta( $post_id, $key, true ) === (string) $value;
 	}
 
-	private function restore_expiration_meta( $post_id, $key, $previous, $written ) {
+	private function restore_expiration_meta( $post_id, $key, $previous, $written, $lock ) {
+		if ( ! $this->refresh_expiration_lock( $lock ) ) {
+			return;
+		}
 		if ( '' === $previous ) {
 			delete_post_meta( $post_id, $key, $written );
 		} else {
@@ -613,14 +573,23 @@ class Jet_Engine_Post_PE {
 	}
 
 	public function delete_meta_expiration( $id ) {
-		return $this->with_expiration_lock( $id, function () use ( $id ) {
+		return $this->with_expiration_lock( $id, function ( $lock ) use ( $id ) {
 			$deleted = array();
 			foreach ( array( $this->action_meta_key, $this->period_meta_key, $this->calendar_meta_key ) as $key ) {
+				if ( ! $this->refresh_expiration_lock( $lock ) ) {
+					return false;
+				}
 				$previous = get_post_meta( $id, $key );
 				delete_post_meta( $id, $key );
+				if ( ! $this->refresh_expiration_lock( $lock ) ) {
+					return false;
+				}
 				if ( metadata_exists( 'post', $id, $key ) ) {
 					foreach ( $deleted as $restore_key => $values ) {
 						foreach ( $values as $value ) {
+							if ( ! $this->refresh_expiration_lock( $lock ) ) {
+								return false;
+							}
 							add_post_meta( $id, $restore_key, wp_slash( $value ) );
 						}
 					}
@@ -676,6 +645,11 @@ class Jet_Engine_Post_PE {
 
 	private function is_calendar_expiration( $post_id, $timestamp ) {
 		return (int) get_post_meta( $post_id, $this->calendar_meta_key, true ) === (int) $timestamp;
+	}
+
+	private function is_legacy_expired( $post_id, $timestamp ) {
+		return $timestamp > 0 && ! $this->is_calendar_expiration( $post_id, $timestamp )
+			&& $timestamp < $this->legacy_expiration_cutoff() - DAY_IN_SECONDS;
 	}
 
 	private function expiration_display_date( $post_id, $timestamp ) {
@@ -740,7 +714,7 @@ class Jet_Engine_Post_PE {
 	}
 
 	public function expire_scheduled_post( $post_id ) {
-		$this->with_expiration_lock( $post_id, function () use ( $post_id ) {
+		$this->with_expiration_lock( $post_id, function ( $lock ) use ( $post_id ) {
 			$timestamp = (int) get_post_meta( $post_id, $this->period_meta_key, true );
 			$calendar = $this->is_calendar_expiration( $post_id, $timestamp );
 			$cutoff = $calendar ? $this->expiration_cutoff() : $this->legacy_expiration_cutoff();
@@ -748,7 +722,8 @@ class Jet_Engine_Post_PE {
 				return;
 			}
 			$action = get_post_meta( $post_id, $this->action_meta_key, true );
-			if ( $this->on_expiration( $post_id, $action )
+			if ( $this->refresh_expiration_lock( $lock ) && $this->on_expiration( $post_id, $action )
+				&& $this->refresh_expiration_lock( $lock )
 				&& $timestamp === (int) get_post_meta( $post_id, $this->period_meta_key, true )
 				&& $calendar === $this->is_calendar_expiration( $post_id, $timestamp )
 				&& $action === get_post_meta( $post_id, $this->action_meta_key, true ) ) {
@@ -784,7 +759,7 @@ class Jet_Engine_Post_PE {
 
 	public function expiration_trash( $id ) {
 		// With the trash disabled, WordPress permanently deletes; never do that here.
-		if ( defined( 'EMPTY_TRASH_DAYS' ) && ! EMPTY_TRASH_DAYS ) {
+		if ( ! $this->trash_enabled() ) {
 			return false;
 		}
 		return (bool) wp_trash_post( $id );
@@ -807,13 +782,18 @@ class Jet_Engine_Post_PE {
 		$date = $this->expiration_display_date( $post->ID, $timestamp );
 		wp_nonce_field( 'jet_pep_save_' . $post->ID, 'jet_pep_nonce' );
 		?>
-		<p><label><input type="checkbox" name="jet_pep_enabled" value="1" <?php checked( (bool) $timestamp ); ?>> <?php esc_html_e( 'Enable expiration', 'jet-engine-post-expiration-period' ); ?></label></p>
+		<p><label><input type="checkbox" name="jet_pep_enabled" value="1" <?php checked( (bool) $timestamp && in_array( $action, array( 'draft', 'trash' ), true ) ); ?>> <?php esc_html_e( 'Enable expiration', 'jet-engine-post-expiration-period' ); ?></label></p>
+		<?php if ( $this->is_legacy_expired( $post->ID, $timestamp ) ) : ?>
+			<p class="description"><?php esc_html_e( 'This expiration was missed and will not run. Set a new date or disable expiration.', 'jet-engine-post-expiration-period' ); ?></p>
+		<?php elseif ( 'trash' === $action && ! $this->trash_enabled() ) : ?>
+			<p class="description"><?php esc_html_e( 'The trash is disabled. Choose Draft or disable expiration.', 'jet-engine-post-expiration-period' ); ?></p>
+		<?php endif; ?>
 		<p><label for="jet-pep-date"><?php esc_html_e( 'Expires on', 'jet-engine-post-expiration-period' ); ?></label>
 		<input id="jet-pep-date" type="date" name="jet_pep_date" value="<?php echo esc_attr( $date ); ?>"></p>
 		<p><label for="jet-pep-action"><?php esc_html_e( 'On expiration', 'jet-engine-post-expiration-period' ); ?></label>
 		<select id="jet-pep-action" name="jet_pep_action">
 			<option value="draft" <?php selected( $action, 'draft' ); ?>><?php esc_html_e( 'Set to draft', 'jet-engine-post-expiration-period' ); ?></option>
-			<option value="trash" <?php selected( $action, 'trash' ); ?>><?php esc_html_e( 'Move to trash', 'jet-engine-post-expiration-period' ); ?></option>
+			<option value="trash" <?php selected( $action, 'trash' ); ?> <?php disabled( 'trash' !== $action && ( ! $this->trash_enabled() || ! current_user_can( 'delete_post', $post->ID ) ) ); ?>><?php esc_html_e( 'Move to trash', 'jet-engine-post-expiration-period' ); ?></option>
 		</select></p>
 		<?php
 	}
