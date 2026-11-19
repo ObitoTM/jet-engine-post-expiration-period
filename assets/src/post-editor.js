@@ -1,32 +1,69 @@
 const { registerPlugin } = wp.plugins;
 const PluginDocumentSettingPanel = wp.editor.PluginDocumentSettingPanel || wp.editPost.PluginDocumentSettingPanel;
 const { useSelect, useDispatch } = wp.data;
-const { useEffect } = wp.element;
+const { useEffect, useState } = wp.element;
 const { ToggleControl, TextControl, SelectControl } = wp.components;
 const { __ } = wp.i18n;
 const domain = 'jet-engine-post-expiration-period';
 const fieldName = 'jet_pep_expiration';
 const saveLock = 'jet-engine-pep-expiration';
 
+function getSiteDate() {
+	const { timezone } = wp.date.getSettings();
+	const now = new Date();
+	if ( !timezone.string ) {
+		now.setTime( now.getTime() + Number( timezone.offset ) * 3600000 );
+	}
+	const parts = new Intl.DateTimeFormat( 'en-US', {
+		timeZone: timezone.string || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+	} ).formatToParts( now );
+	const part = type => parts.find( item => item.type === type ).value;
+	return `${ part( 'year' ) }-${ part( 'month' ) }-${ part( 'day' ) }`;
+}
+
 function PostExpirationPanel() {
-	const { expiration, changed } = useSelect( select => {
+	const { expiration, original, changed } = useSelect( select => {
 		const editor = select( 'core/editor' );
 		return {
 			expiration: editor.getEditedPostAttribute( fieldName ),
+			original: editor.getCurrentPostAttribute( fieldName ),
 			changed: Object.prototype.hasOwnProperty.call( editor.getPostEdits(), fieldName ),
 		};
 	}, [] );
 	const { editPost, lockPostSaving, unlockPostSaving } = useDispatch( 'core/editor' );
-	const missingDate = !! ( expiration && expiration.enabled && !expiration.date && changed );
+	const [ today, setToday ] = useState( getSiteDate );
+	useEffect( () => {
+		const refreshDate = () => setToday( getSiteDate() );
+		window.addEventListener( 'focus', refreshDate );
+		document.addEventListener( 'visibilitychange', refreshDate );
+		const timer = window.setInterval( refreshDate, 60000 );
+		return () => {
+			window.removeEventListener( 'focus', refreshDate );
+			document.removeEventListener( 'visibilitychange', refreshDate );
+			window.clearInterval( timer );
+		};
+	}, [] );
+
+	const sameDate = !! ( original && original.enabled && expiration && expiration.date === original.date );
+	const unchangedTrash = sameDate && original.action === 'trash' && expiration.action === 'trash';
+	const canTrash = window.jetPEP.canTrash;
+	const needsValidation = expiration && expiration.enabled && changed;
+	const dateError = needsValidation && ( !expiration.date
+		? __( 'Select an expiration date.', domain )
+		: ( !sameDate && expiration.date <= today ? __( 'Select a future expiration date.', domain ) : '' ) );
+	const trashError = needsValidation && expiration.action === 'trash' && !canTrash && !unchangedTrash;
+	const invalid = !! ( dateError || trashError );
+	const tomorrow = new Date( today + 'T00:00:00Z' );
+	tomorrow.setUTCDate( tomorrow.getUTCDate() + 1 );
 
 	useEffect( () => {
-		if ( missingDate ) {
+		if ( invalid ) {
 			lockPostSaving( saveLock );
 		} else {
 			unlockPostSaving( saveLock );
 		}
 		return () => unlockPostSaving( saveLock );
-	}, [ missingDate, lockPostSaving, unlockPostSaving ] );
+	}, [ invalid, lockPostSaving, unlockPostSaving ] );
 
 	if ( !expiration ) {
 		return null;
@@ -47,22 +84,28 @@ function PostExpirationPanel() {
 			/>
 			{ expiration.enabled && <wp.element.Fragment>
 				<TextControl
-					className={ missingDate ? 'jet-pep-date-error' : undefined }
+					className={ dateError ? 'jet-pep-control-error' : undefined }
 					label={ __( 'Expires on', domain ) }
 					type="date"
 					value={ expiration.date }
-					aria-invalid={ missingDate }
-					help={ missingDate ? __( 'Select an expiration date.', domain ) : undefined }
-					onChange={ date => update( { date } ) }
+					min={ sameDate ? undefined : tomorrow.toISOString().slice( 0, 10 ) }
+					aria-invalid={ !! dateError }
+					help={ dateError || undefined }
+					onChange={ date => {
+						setToday( getSiteDate() );
+						update( { date } );
+					} }
 					__next40pxDefaultSize
 					__nextHasNoMarginBottom
 				/>
 				<SelectControl
+					className={ trashError ? 'jet-pep-control-error' : undefined }
 					label={ __( 'On expiration', domain ) }
+					help={ trashError ? __( 'You cannot schedule moving this post to trash.', domain ) : undefined }
 					value={ expiration.action }
 					options={ [
 						{ label: __( 'Set to draft', domain ), value: 'draft' },
-						{ label: __( 'Move to trash', domain ), value: 'trash' },
+						{ label: __( 'Move to trash', domain ), value: 'trash', disabled: !canTrash && !unchangedTrash },
 					] }
 					onChange={ action => update( { action } ) }
 					__next40pxDefaultSize
