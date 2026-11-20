@@ -573,6 +573,17 @@ class Jet_Engine_Post_PE {
 	}
 
 	public function delete_meta_expiration( $id ) {
+		global $wpdb;
+
+		// Read storage directly so stale metadata caches cannot skip a real cancellation.
+		$stored = $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_id FROM $wpdb->postmeta WHERE post_id = %d AND meta_key IN (%s, %s, %s) LIMIT 1",
+			$id, $this->period_meta_key, $this->action_meta_key, $this->calendar_meta_key
+		) );
+		if ( null === $stored && ! $wpdb->last_error ) {
+			wp_cache_delete( $id, 'post_meta' );
+			return true;
+		}
 		return $this->with_expiration_lock( $id, function ( $lock ) use ( $id ) {
 			$deleted = array();
 			foreach ( array( $this->action_meta_key, $this->period_meta_key, $this->calendar_meta_key ) as $key ) {
